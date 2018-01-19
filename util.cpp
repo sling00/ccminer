@@ -441,14 +441,29 @@ static json_t *json_rpc_call(CURL *curl, const char *url,
 
 	/* it is assumed that 'curl' is freshly [re]initialized at this pt */
 
-	if (opt_protocol)
+	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, curl_err_str);
+
+	if (opt_protocol) {
 		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1);
-	curl_easy_setopt(curl, CURLOPT_URL, url);
+	}
+
+	if ((rc = curl_easy_setopt(curl, CURLOPT_URL, url)) != CURL_OK) {
+		if (strlen(curl_err_str) > 0) {
+ 			applog(LOG_ERR, "CURLOPT_URL error: %s", curl_err_str);
+		}
+ 		else {
+ 			applog(LOG_ERR, "CURLOPT_URL error: %s", curl_easy_strerror(rc));
+ 		}
+ 		curl_easy_reset(curl);
+ 		return NULL;	
+	}
+
 	if (opt_cert) {
 		curl_easy_setopt(curl, CURLOPT_CAINFO, opt_cert);
 		// ignore CN domain name, allow to move cert files
-		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0);
+		//curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0);
 	}
+
 	curl_easy_setopt(curl, CURLOPT_ENCODING, "");
 	curl_easy_setopt(curl, CURLOPT_FAILONERROR, 0);
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1);
@@ -461,19 +476,21 @@ static json_t *json_rpc_call(CURL *curl, const char *url,
 	curl_easy_setopt(curl, CURLOPT_SEEKFUNCTION, &seek_data_cb);
 	curl_easy_setopt(curl, CURLOPT_SEEKDATA, &upload_data);
 #endif
-	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, curl_err_str);
 	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
 	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, resp_hdr_cb);
 	curl_easy_setopt(curl, CURLOPT_HEADERDATA, &hi);
+
 	if (opt_proxy) {
 		curl_easy_setopt(curl, CURLOPT_PROXY, opt_proxy);
 		curl_easy_setopt(curl, CURLOPT_PROXYTYPE, opt_proxy_type);
 	}
+
 	if (userpass) {
 		curl_easy_setopt(curl, CURLOPT_USERPWD, userpass);
 		curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
 	}
+
 #if LIBCURL_VERSION_NUM >= 0x070f06
 	if (keepalive)
 		curl_easy_setopt(curl, CURLOPT_SOCKOPTFUNCTION, sockopt_keepalive_cb);
@@ -1059,14 +1076,18 @@ bool stratum_connect(struct stratum_ctx *sctx, const char *url)
 	sctx->curl_url = (char*)malloc(strlen(url)+1);
 	sprintf(sctx->curl_url, "http%s", strstr(url, "://"));
 
-	if (opt_protocol)
+	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, sctx->curl_err_str);
+
+	if (opt_protocol) {
 		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1);
+	}
+
 	curl_easy_setopt(curl, CURLOPT_URL, sctx->curl_url);
 	curl_easy_setopt(curl, CURLOPT_FRESH_CONNECT, 1);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, opt_timeout);
-	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, sctx->curl_err_str);
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1);
 	curl_easy_setopt(curl, CURLOPT_TCP_NODELAY, 1);
+
 	if (opt_proxy && opt_proxy_type != CURLPROXY_HTTP) {
 		curl_easy_setopt(curl, CURLOPT_PROXY, opt_proxy);
 		curl_easy_setopt(curl, CURLOPT_PROXYTYPE, opt_proxy_type);
@@ -1078,6 +1099,7 @@ bool stratum_connect(struct stratum_ctx *sctx, const char *url)
 		else
 			curl_easy_setopt(curl, CURLOPT_PROXY, "");
 	}
+
 #if LIBCURL_VERSION_NUM >= 0x070f06
 	curl_easy_setopt(curl, CURLOPT_SOCKOPTFUNCTION, sockopt_keepalive_cb);
 #endif
@@ -1352,10 +1374,16 @@ bool stratum_authorize(struct stratum_ctx *sctx, const char *user, const char *p
 	res_val = json_object_get(val, "result");
 	err_val = json_object_get(val, "error");
 
-	if (!res_val || json_is_false(res_val) ||
-	    (err_val && !json_is_null(err_val)))  {
-		applog(LOG_ERR, "Stratum authentication failed");
-		goto out;
+	if (!res_val || json_is_false(res_val) || (err_val && !json_is_null(err_val)))  {
+		if (err_val && json_is_array(err_val)) {
+ 			const char* reason = json_string_value(json_array_get(err_val, 1));
+ 			applog(LOG_ERR, "Stratum authentication failed (%s)", reason);
+ 		}
+ 		else {
+ 			applog(LOG_ERR, "Stratum authentication failed");
+ 		}
+
+ 		goto out;
 	}
 
 	sctx->tm_connected = time(NULL);
@@ -1670,7 +1698,7 @@ static bool stratum_benchdata(json_t *result, json_t *params, int thr_id)
 
 	if (!cgpu || !opt_stratum_stats) return false;
 
-#if defined(WIN32) && (defined(_M_X64) || defined(__x86_64__))
+#if defined WIN32 && defined _WIN64
 	strcpy(os, "win64");
 #else
 	strcpy(os, is_windows() ? "win32" : "linux");
